@@ -161,11 +161,19 @@ def check_login(s):
 
 
 def solve_math(page):
-    """从页面中找出 'x + y' 验证题并返回答案, 找不到返回 None"""
-    candidates = re.findall(r"(\d+)\s*\+\s*(\d+)", page)
-    if candidates:
-        a, b = candidates[0]
-        return int(a) + int(b)
+    """从文本中找出 'x op y' 验证题(支持加减乘除)并返回答案, 找不到返回 None"""
+    m = re.search(r"(\d+)\s*([+\-×xX*÷])\s*(\d+)", page)
+    if not m:
+        return None
+    a, op, b = int(m.group(1)), m.group(2), int(m.group(3))
+    if op == "+":
+        return a + b
+    if op == "-":
+        return a - b
+    if op in ("×", "x", "X", "*"):
+        return a * b
+    if b:
+        return a // b if a % b == 0 else round(a / b, 2)
     return None
 
 
@@ -196,27 +204,46 @@ def qiandao(s, formhash, say):
     if re.search(r"今日已签|已经签到|明日再来|已签到", msg):
         return "今日已签到(重复提交): " + msg[:100]
 
-    # 需要验证: 从响应或签到页里找算式, 算出答案后带参数重试
-    if re.search(r"验证|答案|请输入", msg) or solve_math(body):
-        question = solve_math(body)
-        if question is None:
-            p2 = s.get(SIGN_URL, headers={"Referer": BASE + "/index.php"}, timeout=30).text
-            question = solve_math(p2.replace("&amp;", "&"))
-        if question is None:
-            raise RuntimeError("网站要求输入验证答案, 但未找到算式, 请开启 SXTB_DEBUG=1 反馈调试文件")
-        print(f"检测到验证题, 计算答案: {question}")
+    # k_misign 验证模式: 返回一段 JS prompt 脚本(var q="签到验证：17 - 6 = ?"),
+    # 里面带题目和重新提交的地址, 直接从中提取
+    qm = re.search(r'var\s+q\s*=\s*["\']([^"\']+)["\']', body)
+    if qm:
+        qtext = qm.group(1)
+        answer = solve_math(qtext)
+        if answer is None:
+            raise RuntimeError(f"无法计算验证题: {qtext[:80]}")
+        print(f"检测到验证题: {qtext} -> 答案: {answer}")
+
+        # 提取脚本里自带的重新提交 URL(答案参数名以脚本实际写法为准)
+        retry_urls = []
+        for u in re.findall(r"['\"]([^'\"]*k_misign:sign[^'\"]*formhash[^'\"]*)['\"]", body):
+            u = u.replace("&amp;", "&")
+            if u.startswith("/"):
+                u = BASE + u
+            elif not u.startswith("http"):
+                u = BASE + "/" + u
+            if u not in retry_urls:
+                retry_urls.append(u)
+        if not retry_urls:
+            retry_urls = [url]
+
         last_msg = msg
-        for param in ("qdanswer", "answer", "secanswer"):
-            r2 = s.get(url + f"&{param}={question}", headers=headers, timeout=30)
+        for u in retry_urls:
+            target = u + str(answer) if re.search(r"[a-z]+=$", u) else u + "&answer=" + str(answer)
+            r2 = s.get(target, headers=headers, timeout=30)
+            debug_dump("qiandao2", r2)
             cm2 = re.search(r"<!\[CDATA\[(.*?)\]\]>", r2.text, re.S)
-            msg2 = strip_tags(cm2.group(1) if cm2 else r2.text)
+            raw2 = cm2.group(1) if cm2 else r2.text
+            qm2 = re.search(r'var\s+q\s*=\s*["\']([^"\']+)["\']', r2.text)
+            if qm2:
+                last_msg = "验证答案未通过, 又返回新题目: " + qm2.group(1)
+                continue
+            msg2 = strip_tags(raw2)
             if re.search(r"签到成功|获得随机奖励|恭喜", msg2):
                 return "签到成功: " + msg2[:150]
             if re.search(r"今日已签|已经签到|明日再来|已签到", msg2):
                 return "今日已签到(重复提交): " + msg2[:100]
-            last_msg = msg2
-            if not re.search(r"验证|答案|请输入", msg2):
-                break
+            last_msg = msg2 or raw2[:150]
         raise RuntimeError("验证答案提交未通过, 网站返回: " + last_msg[:150])
 
     raise RuntimeError("签到结果未知: " + (msg[:150] or body[:150]))
