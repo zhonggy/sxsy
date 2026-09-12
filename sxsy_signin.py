@@ -232,19 +232,31 @@ def qiandao(s, formhash, say):
             target = u + str(answer) if re.search(r"[a-z]+=$", u) else u + "&answer=" + str(answer)
             r2 = s.get(target, headers=headers, timeout=30)
             debug_dump("qiandao2", r2)
-            cm2 = re.search(r"<!\[CDATA\[(.*?)\]\]>", r2.text, re.S)
-            raw2 = cm2.group(1) if cm2 else r2.text
-            qm2 = re.search(r'var\s+q\s*=\s*["\']([^"\']+)["\']', r2.text)
+            raw2 = r2.text
+            qm2 = re.search(r'var\s+q\s*=\s*["\']([^"\']+)["\']', raw2)
             if qm2:
                 last_msg = "验证答案未通过, 又返回新题目: " + qm2.group(1)
                 continue
-            msg2 = strip_tags(raw2)
-            if re.search(r"签到成功|获得随机奖励|恭喜", msg2):
-                return "签到成功: " + msg2[:150]
-            if re.search(r"今日已签|已经签到|明日再来|已签到", msg2):
-                return "今日已签到(重复提交): " + msg2[:100]
-            last_msg = msg2 or raw2[:150]
-        raise RuntimeError("验证答案提交未通过, 网站返回: " + last_msg[:150])
+            # 关键字直接在原始响应里找(strip_tags 会丢掉 script 里的提示文字)
+            if re.search(r"签到成功|获得随机奖励|恭喜", raw2):
+                return "签到成功: " + (strip_tags(raw2) or raw2)[:150]
+            if re.search(r"今日已签|已经签到|明日再来|已签到", raw2):
+                return "今日已签到(重复提交): " + strip_tags(raw2)[:100]
+            last_msg = strip_tags(raw2) or re.sub(r"\s+", " ", raw2)[:120]
+
+        # 状态复核: 重新请求签到接口, 有些成功响应只返回空的JS脚本,
+        # 以签到状态为准而不是提交响应的内容
+        r3 = s.get(url, headers=headers, timeout=30)
+        debug_dump("qiandao3", r3)
+        raw3 = r3.text
+        if re.search(r"今日已签|已经签到|已签到", raw3):
+            return "签到成功(已复核确认今日已签)"
+        if re.search(r"签到成功|获得随机奖励|恭喜", raw3):
+            return "签到成功: " + strip_tags(raw3)[:150]
+        qm3 = re.search(r'var\s+q\s*=\s*["\']([^"\']+)["\']', raw3)
+        if qm3:
+            raise RuntimeError("验证答案提交后仍未通过(网站又返回新题目), 请开启 SXTB_DEBUG=1 查看 sxsy_debug_qiandao2.html")
+        raise RuntimeError("验证答案提交后状态未知, 网站返回: " + (re.sub(r"\s+", " ", raw3)[:150]))
 
     raise RuntimeError("签到结果未知: " + (msg[:150] or body[:150]))
 
