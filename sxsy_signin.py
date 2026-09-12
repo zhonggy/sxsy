@@ -250,9 +250,11 @@ def qiandao(s, formhash, say):
         debug_dump("qiandao3", r3)
         raw3 = r3.text
         if re.search(r"今日已签|已经签到|已签到", raw3):
-            return "签到成功(已复核确认今日已签)"
+            detail = fetch_reward(s)
+            return "签到成功" + (f"（{detail}）" if detail else "") + "(复核确认)"
         if re.search(r"签到成功|获得随机奖励|恭喜", raw3):
-            return "签到成功: " + strip_tags(raw3)[:150]
+            detail = fetch_reward(s) if not re.search(r"获得随机奖励", raw3) else ""
+            return "签到成功: " + strip_tags(raw3)[:150] + (f"（{detail}）" if detail else "")
         qm3 = re.search(r'var\s+q\s*=\s*["\']([^"\']+)["\']', raw3)
         if qm3:
             raise RuntimeError("验证答案提交后仍未通过(网站又返回新题目), 请开启 SXTB_DEBUG=1 查看 sxsy_debug_qiandao2.html")
@@ -272,6 +274,26 @@ def format_result(res):
     if res.startswith("失败"):
         return "❌ " + res
     return res
+
+
+def fetch_reward(s):
+    """签到成功后从签到页抓取本次奖励明细(如 金币 20, 威望 5)"""
+    try:
+        p = s.get(SIGN_URL, headers={"Referer": BASE + "/index.php"}, timeout=30)
+        page = p.text.replace("&amp;", "&")
+        seg = page
+        mm = re.search(r"奖励", page)
+        if mm:  # 只看"奖励"附近的文字, 避免误抓页面上的积分总额
+            seg = page[max(0, mm.start() - 50): mm.end() + 300]
+        rewards = re.findall(r"(金币|金钱|威望|贡献)\s*[+:：=]?\s*(\d+)", seg)
+        if rewards:
+            return "，".join(f"{n} {v}" for n, v in rewards)
+        sm = re.search(r"获得随机奖励([^<\n]{0,60})", page)
+        if sm:
+            return re.sub(r"\s+", " ", sm.group(1)).strip()
+    except Exception:
+        pass
+    return ""
 
 
 def run_account(cookie_str, say):
