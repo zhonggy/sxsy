@@ -108,6 +108,24 @@ def is_cf_challenge(r):
         or "challenges.cloudflare.com" in r.text or "cf-browser-verification" in r.text
 
 
+def get_uid(page):
+    """从页面 JS 变量里取当前用户 ID, 未登录时为 '0' 或不存在"""
+    m = re.search(r"discuz_uid\s*=\s*'(\d+)'", page)
+    return m.group(1) if m else None
+
+
+def debug_dump(tag, r):
+    """SXTB_DEBUG=1 时把页面存到文件并打印关键信息, 便于排查"""
+    if os.environ.get("SXTB_DEBUG", "").strip() != "1":
+        return
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"sxsy_debug_{tag}.html")
+    with open(path, "w", encoding="utf-8", errors="ignore") as f:
+        f.write(r.text)
+    print(f"[调试] HTTP {r.status_code} 最终URL: {r.url}")
+    print(f"[调试] discuz_uid: {get_uid(r.text)} | 退出链接: {'action=logout' in r.text.replace('&amp;','&')} | 退出文字: {'退出' in r.text}")
+    print(f"[调试] 页面已保存: {path}")
+
+
 def check_login(s):
     """验证 Cookie 是否有效, 返回 formhash"""
     r = s.get(BASE + "/index.php", timeout=30)
@@ -117,6 +135,7 @@ def check_login(s):
             "请给青龙配置环境变量 SXTB_PROXY 指向可用代理(如 http://127.0.0.1:7897)")
     if r.status_code != 200:
         raise RuntimeError(f"打开首页异常: HTTP {r.status_code}")
+    debug_dump("index", r)
 
     names = [c.name for c in s.cookies]
     missing = [k for k in ("saltkey", "auth") if not any(k in n for n in names)]
@@ -125,15 +144,12 @@ def check_login(s):
             "Cookie 不完整, 缺少关键字段(" + ", ".join(missing) + "): "
             "请复制完整 Cookie 字符串, 必须包含 u52q_2132_auth 和 u52q_2132_saltkey")
 
-    # HTML 属性里 & 会被转义成 &amp;, 统一还原后再匹配
-    text = r.text.replace("&amp;", "&")
-    if "logging&action=logout" not in text:
-        uid = re.search(r"discuz_uid\s*=\s*'(\d+)'", r.text)
-        if not uid or uid.group(1) == "0":
-            raise RuntimeError(
-                "Cookie 无效(未登录状态): Cookie 可能已过期, "
-                "请重新从浏览器登录后复制完整 Cookie 更新 SXTB_COOKIE")
-        raise RuntimeError("登录态异常, 网站返回异常页面, 请把青龙日志反馈给脚本作者")
+    uid = get_uid(r.text)
+    if uid in (None, "0"):
+        raise RuntimeError(
+            "Cookie 无效(未登录状态): Cookie 可能已过期, "
+            "请重新从浏览器登录后复制完整 Cookie 更新 SXTB_COOKIE")
+    print(f"登录成功, 用户ID: {uid}")
 
     m = re.search(r'name="formhash"\s+value="([a-f0-9]+)"', r.text)
     if not m:
@@ -154,8 +170,9 @@ def qiandao(s, say):
     """执行签到, 返回结果描述"""
     r = s.get(SIGN_URL, timeout=30)
     page = r.text.replace("&amp;", "&")
+    debug_dump("sign", r)
 
-    if "logging&action=logout" not in page:
+    if get_uid(page) in (None, "0"):
         raise RuntimeError("Cookie 已失效, 请重新复制 Cookie")
 
     if re.search(r"已经签到|今日已签|已签到过|明日再来", page):
