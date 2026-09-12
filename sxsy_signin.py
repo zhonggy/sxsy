@@ -125,7 +125,9 @@ def check_login(s):
             "Cookie 不完整, 缺少关键字段(" + ", ".join(missing) + "): "
             "请复制完整 Cookie 字符串, 必须包含 u52q_2132_auth 和 u52q_2132_saltkey")
 
-    if "logging&action=logout" not in r.text:
+    # HTML 属性里 & 会被转义成 &amp;, 统一还原后再匹配
+    text = r.text.replace("&amp;", "&")
+    if "logging&action=logout" not in text:
         uid = re.search(r"discuz_uid\s*=\s*'(\d+)'", r.text)
         if not uid or uid.group(1) == "0":
             raise RuntimeError(
@@ -151,7 +153,7 @@ def solve_math(page):
 def qiandao(s, say):
     """执行签到, 返回结果描述"""
     r = s.get(SIGN_URL, timeout=30)
-    page = r.text
+    page = r.text.replace("&amp;", "&")
 
     if "logging&action=logout" not in page:
         raise RuntimeError("Cookie 已失效, 请重新复制 Cookie")
