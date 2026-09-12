@@ -181,8 +181,11 @@ def qiandao(s, say):
     # 定位签到表单
     m = re.search(r"<form[^>]*id=\"signform\"[^>]*>", page)
     if not m:
-        msg = strip_tags(page)[:150]
-        raise RuntimeError("未找到签到表单: " + msg)
+        # Discuz 提示信息页的正文在 messagetext 区块里
+        mm = re.search(r'id="messagetext"[^>]*>(.*?)</div>', page, re.S)
+        if mm:
+            raise RuntimeError("网站提示: " + strip_tags(mm.group(1))[:200])
+        raise RuntimeError("未找到签到表单(页面非提示页也非签到页), 请开启 SXTB_DEBUG=1 反馈调试文件")
 
     form_tag = m.group(0)
     end = page.find("</form>", m.end())
