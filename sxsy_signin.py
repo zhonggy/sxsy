@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 尚香书苑 (https://sxsy45.com) 青龙面板每日自动签到 (Cookie 版)
-网站登录需要验证码, 故改用浏览器 Cookie 方案: 登录一次复制 Cookie,
-脚本带 Cookie 直接打开 dsu_paulsign 签到页, 自动计算"两数相加"验证答案并提交签到。
+网站使用 Discuz! X3.5 + k_misign(百变每日签到)插件, 登录需要验证码,
+故采用浏览器 Cookie 方案: 登录一次复制 Cookie, 脚本带 Cookie 请求
+k_misign 的签到接口, 自动计算"两数相加"验证答案并完成签到。
 
 获取 Cookie 方法:
 1. 电脑浏览器登录 https://sxsy45.com
@@ -41,7 +42,9 @@ import requests
 BASE = "https://sxsy45.com"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-SIGN_URL = BASE + "/plugin.php?id=dsu_paulsign:sign"
+SIGN_URL = BASE + "/k_misign-sign.html"
+QD_URL = (BASE + "/plugin.php?id=k_misign:sign&operation=qiandao"
+          "&format=empty&inajax=1&formhash={formhash}")
 
 
 def notify(title, content):
@@ -166,7 +169,7 @@ def solve_math(page):
     return None
 
 
-def qiandao(s, say):
+def qiandao(s, formhash, say):
     """执行签到, 返回结果描述"""
     r = s.get(SIGN_URL, timeout=30)
     page = r.text.replace("&amp;", "&")
@@ -175,87 +178,47 @@ def qiandao(s, say):
     if get_uid(page) in (None, "0"):
         raise RuntimeError("Cookie 已失效, 请重新复制 Cookie")
 
-    if re.search(r"已经签到|今日已签|已签到过|明日再来", page):
+    # 先探测是否已签到(签到页顶部按钮消失且出现已签字样)
+    if re.search(r"k_misign_topb", page) is None and re.search(r"已签到|已经签到|今日已签", page):
         return "今日已签到(无需重复)"
 
-    # 定位签到表单
-    m = re.search(r"<form[^>]*id=\"signform\"[^>]*>", page)
-    if not m:
-        # Discuz 提示信息页的正文在 messagetext 区块里
-        mm = re.search(r'id="messagetext"[^>]*>(.*?)</div>', page, re.S)
-        if mm:
-            raise RuntimeError("网站提示: " + strip_tags(mm.group(1))[:200])
-        raise RuntimeError("未找到签到表单(页面非提示页也非签到页), 请开启 SXTB_DEBUG=1 反馈调试文件")
-
-    form_tag = m.group(0)
-    end = page.find("</form>", m.end())
-    seg = page[m.end():end if end != -1 else m.end() + 3000]
-
-    am = re.search(r"action=\"([^\"]+)\"", form_tag)
-    action = am.group(1).replace("&amp;", "&") if am else \
-        "plugin.php?id=dsu_paulsign:sign&operation=qiandao&infloat=1&inajax=1"
-    if action.startswith("/"):
-        action_url = BASE + action
-    elif action.startswith("http"):
-        action_url = action
-    else:
-        action_url = BASE + "/" + action
-
-    # 收集表单里已有的 hidden 字段(两种属性顺序都兼容)
-    fields = {}
-    for tag in re.findall(r"<input[^>]*>", seg):
-        nm = re.search(r"name=\"([^\"]+)\"", tag)
-        vm = re.search(r"value=\"([^\"]*)\"", tag)
-        if nm:
-            fields[nm.group(1)] = vm.group(1) if vm else ""
-
-    formhash = fields.get("formhash", "")
-    if not formhash:
-        hm = re.search(r'name="formhash"\s+value="([a-f0-9]+)"', page)
-        formhash = hm.group(1) if hm else ""
-
-    # 心情 qdxq: 下拉框取第一个选项, 否则用 hidden 值
-    if "qdxq" not in fields:
-        qm = re.search(r"<select[^>]*name=\"qdxq\".*?<option value=\"([^\"]+)\"", seg, re.S)
-        if qm:
-            fields["qdxq"] = qm.group(1)
-        else:
-            om = re.search(r"<option value=\"([^\"]+)\"", seg)
-            fields["qdxq"] = om.group(1) if om else "1"
-
-    data = {
-        "formhash": formhash,
-        "qdxq": fields.get("qdxq", "1"),
-        "qdmode": fields.get("qdmode", "3"),
-        "todaysay": say,
-        "fastreply": fields.get("fastreply", "0"),
-    }
-
-    # 算术验证: 优先在表单附近找题目, 找不到再全页找
-    answer = solve_math(seg)
-    if answer is None:
-        answer = solve_math(page)
-    need_answer = "qdanswer" in page  # 页面带验证输入框说明需要答案
-    if need_answer:
-        if answer is None:
-            raise RuntimeError("需要输入两数之和的验证答案, 但未在页面中找到算式, 请反馈给脚本作者")
-        data["qdanswer"] = str(answer)
-
-    r = s.post(action_url, data=data, headers={
-        "Referer": SIGN_URL,
-        "X-Requested-With": "XMLHttpRequest",
-    }, timeout=30)
-
+    # k_misign 快速签到接口(同浏览器顶部按钮的 AJAX 请求)
+    url = QD_URL.format(formhash=formhash)
+    headers = {"Referer": SIGN_URL, "X-Requested-With": "XMLHttpRequest"}
+    r = s.get(url, headers=headers, timeout=30)
+    debug_dump("qiandao", r)
     body = r.text
     cm = re.search(r"<!\[CDATA\[(.*?)\]\]>", body, re.S)
     msg = strip_tags(cm.group(1) if cm else body)
 
-    if re.search(r"签到成功|恭喜|奖励", msg):
+    if re.search(r"签到成功|获得随机奖励|恭喜", msg):
         return "签到成功: " + msg[:150]
-    if re.search(r"已经签到|今日已签|明日再来", msg):
+    if re.search(r"今日已签|已经签到|明日再来|已签到", msg):
         return "今日已签到(重复提交): " + msg[:100]
-    if re.search(r"验证|答案", msg) and need_answer:
-        raise RuntimeError("验证答案校验未通过, 请反馈页面题目格式: " + msg[:150])
+
+    # 需要验证: 从响应或签到页里找算式, 算出答案后带参数重试
+    if re.search(r"验证|答案|请输入", msg) or solve_math(body):
+        question = solve_math(body)
+        if question is None:
+            p2 = s.get(SIGN_URL, headers={"Referer": BASE + "/index.php"}, timeout=30).text
+            question = solve_math(p2.replace("&amp;", "&"))
+        if question is None:
+            raise RuntimeError("网站要求输入验证答案, 但未找到算式, 请开启 SXTB_DEBUG=1 反馈调试文件")
+        print(f"检测到验证题, 计算答案: {question}")
+        last_msg = msg
+        for param in ("qdanswer", "answer", "secanswer"):
+            r2 = s.get(url + f"&{param}={question}", headers=headers, timeout=30)
+            cm2 = re.search(r"<!\[CDATA\[(.*?)\]\]>", r2.text, re.S)
+            msg2 = strip_tags(cm2.group(1) if cm2 else r2.text)
+            if re.search(r"签到成功|获得随机奖励|恭喜", msg2):
+                return "签到成功: " + msg2[:150]
+            if re.search(r"今日已签|已经签到|明日再来|已签到", msg2):
+                return "今日已签到(重复提交): " + msg2[:100]
+            last_msg = msg2
+            if not re.search(r"验证|答案|请输入", msg2):
+                break
+        raise RuntimeError("验证答案提交未通过, 网站返回: " + last_msg[:150])
+
     raise RuntimeError("签到结果未知: " + (msg[:150] or body[:150]))
 
 
@@ -274,8 +237,8 @@ def format_result(res):
 
 def run_account(cookie_str, say):
     s = new_session(cookie_str)
-    check_login(s)
-    return qiandao(s, say)
+    formhash = check_login(s)
+    return qiandao(s, formhash, say)
 
 
 def main():
